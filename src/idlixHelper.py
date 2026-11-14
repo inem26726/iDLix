@@ -20,7 +20,6 @@ from urllib.parse import unquote, urlparse
 from vtt_to_srt.vtt_to_srt import ConvertFile
 from curl_cffi import requests as cffi_requests
 from src.CryptoJsAesHelper import CryptoJsAes, dec
-from pathlib import Path
 
 
 class IdlixHelper:
@@ -63,30 +62,48 @@ class IdlixHelper:
                 'status': False,
                 'message': 'URL is required'
             }
-        if url.startswith(self.BASE_WEB_URL):
+        if not url.startswith(self.BASE_WEB_URL):
+            return {
+                'status': False,
+                'message': 'Invalid URL'
+            }
+        try:
             request = self.request.get(
                 url=url,
             )
-            if request.status_code == 200:
-                bs = BeautifulSoup(request.text, 'html.parser')
-                self.video_id = bs.find('meta', {'id': 'dooplay-ajax-counter'}).get('data-postid')
-                self.video_name = unquote(bs.find('meta', {'itemprop': 'name'}).get('content'))
-                self.poster = bs.find('img', {'itemprop': 'image'}).get('src')
-                return {
-                    'status': True,
-                    'video_id': self.video_id,
-                    'video_name': self.video_name,
-                    'poster': self.poster
-                }
-            else:
+            if request.status_code != 200:
                 return {
                     'status': False,
                     'message': 'Failed to get video data'
                 }
-        else:
+
+            bs = BeautifulSoup(request.text, 'html.parser')
+            meta_counter = bs.find('meta', {'id': 'dooplay-ajax-counter'})
+            meta_name = bs.find('meta', {'itemprop': 'name'})
+            image = bs.find('img', {'itemprop': 'image'})
+
+            # bs.find() returns None when the page is a block/interstitial page
+            # or the layout changed; the original chained .get() straight onto it
+            # and crashed with AttributeError before any status could be read.
+            if not meta_counter or not meta_name:
+                return {
+                    'status': False,
+                    'message': 'Video metadata not found (unexpected page layout)'
+                }
+
+            self.video_id = meta_counter.get('data-postid')
+            self.video_name = unquote(meta_name.get('content') or '')
+            self.poster = image.get('src') if image else None
+            return {
+                'status': True,
+                'video_id': self.video_id,
+                'video_name': self.video_name,
+                'poster': self.poster
+            }
+        except Exception as error_get_movie_data:
             return {
                 'status': False,
-                'message': 'Invalid URL'
+                'message': str(error_get_movie_data)
             }
 
     def get_series_data(self, url):
@@ -95,30 +112,47 @@ class IdlixHelper:
                 'status': False,
                 'message': 'URL is required'
             }
-        if url.startswith(self.BASE_WEB_URL):
+        if not url.startswith(self.BASE_WEB_URL):
+            return {
+                'status': False,
+                'message': 'Invalid URL'
+            }
+        try:
             request = self.request.get(
                 url=url,
             )
-            if request.status_code == 200:
-                bs = BeautifulSoup(request.text, 'html.parser')
-                self.video_id = bs.find('meta', {'id': 'dooplay-ajax-counter'}).get('data-postid')
-                self.video_name = unquote(bs.find('h1', {'class': 'epih1'}).getText())
-                self.poster = 'no-poster'
-                return {
-                    'status': True,
-                    'video_id': self.video_id,
-                    'video_name': self.video_name,
-                    'poster': self.poster
-                }
-            else:
+            if request.status_code != 200:
                 return {
                     'status': False,
                     'message': 'Failed to get video data'
                 }
-        else:
+
+            bs = BeautifulSoup(request.text, 'html.parser')
+            meta_counter = bs.find('meta', {'id': 'dooplay-ajax-counter'})
+            episode_title = bs.find('h1', {'class': 'epih1'})
+
+            # same None-chaining crash as get_movie_data(): find() returns None
+            # on a block page or a layout change, and .getText()/.get() would
+            # raise AttributeError with no status to report back.
+            if not meta_counter or not episode_title:
+                return {
+                    'status': False,
+                    'message': 'Video metadata not found (unexpected page layout)'
+                }
+
+            self.video_id = meta_counter.get('data-postid')
+            self.video_name = unquote(episode_title.get_text())
+            self.poster = 'no-poster'
+            return {
+                'status': True,
+                'video_id': self.video_id,
+                'video_name': self.video_name,
+                'poster': self.poster
+            }
+        except Exception as error_get_series_data:
             return {
                 'status': False,
-                'message': 'Invalid URL'
+                'message': str(error_get_series_data)
             }
 
     def get_embed_url(self):
@@ -167,10 +201,27 @@ class IdlixHelper:
                 'message': 'Embed URL is required'
             }
 
-        if '/video/' in urlparse(self.embed_url).path:
-            self.embed_url = urlparse(self.embed_url).path.split('/')[2]
-        elif urlparse(self.embed_url).query.split('=')[1]:
-            self.embed_url = urlparse(self.embed_url).query.split('=')[1]
+        # This block used to sit outside the try below and indexed blind:
+        # path.split('/')[2] raises IndexError on a short path, and
+        # query.split('=')[1] raises IndexError whenever the query is empty or
+        # has no '='. Both escaped as a raw traceback.
+        try:
+            parsed_embed = urlparse(self.embed_url)
+            if '/video/' in parsed_embed.path:
+                video_path_parts = parsed_embed.path.split('/')
+                if len(video_path_parts) > 2 and video_path_parts[2]:
+                    self.embed_url = video_path_parts[2]
+            elif parsed_embed.query:
+                first_pair = parsed_embed.query.split('&')[0]
+                if '=' in first_pair:
+                    first_value = first_pair.split('=', 1)[1]
+                    if first_value:
+                        self.embed_url = first_value
+        except Exception as error_parse_embed_url:
+            return {
+                'status': False,
+                'message': str(error_parse_embed_url)
+            }
 
         try:
             request = cffi_requests.post(
@@ -195,15 +246,15 @@ class IdlixHelper:
                 self.m3u8_url = request.json().get('videoSource')
                 self.variant_playlist = m3u8.load(self.m3u8_url)
                 tmp_variant_playlist = []
-                id = 0
+                variant_index = 0
                 for playlist in self.variant_playlist.playlists:
                     tmp_variant_playlist.append({
                         'bandwidth': playlist.stream_info.bandwidth,
                         'resolution': str(playlist.stream_info.resolution[0]) + 'x' + str(playlist.stream_info.resolution[1]),
                         'uri': playlist.uri,
-                        'id': str(id)
+                        'id': str(variant_index)
                     })
-                    id += 1
+                    variant_index += 1
                 is_variant_playlist = True if len(tmp_variant_playlist) > 1 else False
                 return {
                     'status': True,
@@ -222,6 +273,54 @@ class IdlixHelper:
                 'message': str(error_get_m3u8_url)
             }
 
+    # Characters m3u8_To_MP4 strips out of file names (helpers/path_helper.py).
+    # Mirrored here so the path we hand back matches the file it actually wrote.
+    WINDOWS_BANNED_CHARACTERS = ['\\', '/', ':', '*', '?', '"', '<', '>', '|']
+
+    @staticmethod
+    def safe_file_stem(name, fallback='video'):
+        """Reduce an untrusted title to one safe path component.
+
+        video_name is parsed out of the remote page, so it must never reach
+        open() or a path join unfiltered: a '/' escapes the target directory
+        and a Windows-reserved character makes the write fail outright.
+        """
+        if not name:
+            return fallback
+        cleaned = str(name)
+        for char in IdlixHelper.WINDOWS_BANNED_CHARACTERS:
+            cleaned = cleaned.replace(char, '')
+        cleaned = ''.join(char for char in cleaned if char.isprintable())
+        cleaned = ' '.join(cleaned.split())
+        # A component that is nothing but dots ("..", "...") is meaningless on
+        # its own and is a footgun for any caller that appends no extension.
+        if not cleaned or set(cleaned) == {'.'}:
+            return fallback
+        return cleaned
+
+    @classmethod
+    def safe_mp4_name(cls, name):
+        """Same shape m3u8_To_MP4 produces, so our reported path is exact."""
+        stem = cls.safe_file_stem(name)
+        return stem if stem.endswith('.mp4') else stem + '.mp4'
+
+    @staticmethod
+    def unique_mp4_name(directory, wanted):
+        """Pick a target name that does not exist yet.
+
+        m3u8_To_MP4 silently swaps in a random name when the requested file is
+        already there, which left us reporting a path the user could not find.
+        """
+        if not os.path.exists(os.path.join(directory, wanted)):
+            return wanted
+        stem, ext = os.path.splitext(wanted)
+        counter = 1
+        while True:
+            candidate = '{} ({}){}'.format(stem, counter, ext)
+            if not os.path.exists(os.path.join(directory, candidate)):
+                return candidate
+            counter += 1
+
     def download_m3u8(self):
         try:
             if not self.m3u8_url:
@@ -229,24 +328,28 @@ class IdlixHelper:
                     'status': False,
                     'message': 'M3U8 URL is required'
                 }
-            if not os.path.exists(os.getcwd() + '/tmp/'):
-                os.mkdir(os.getcwd() + '/tmp/')
-            
-            if not os.path.exists(os.getcwd() + '/downloads/'):
-                os.mkdir(os.getcwd() + '/downloads/')
-            
+
+            download_dir = os.path.join(os.getcwd(), 'downloads')
+            tmp_dir = os.path.join(os.getcwd(), 'tmp')
+            os.makedirs(tmp_dir, exist_ok=True)
+            os.makedirs(download_dir, exist_ok=True)
+
+            mp4_file_name = self.unique_mp4_name(
+                download_dir, self.safe_mp4_name(self.video_name)
+            )
+
             m3u8_To_MP4.multithread_download(
                 m3u8_uri=self.m3u8_url,
                 max_num_workers=10,
-                mp4_file_name=self.video_name,
-                mp4_file_dir=os.getcwd() + '/downloads/',
-                tmpdir=os.getcwd() + '/tmp/'
+                mp4_file_name=mp4_file_name,
+                mp4_file_dir=download_dir,
+                tmpdir=tmp_dir
             )
-            shutil.rmtree(os.getcwd() + '/tmp/', ignore_errors=True)
+            shutil.rmtree(tmp_dir, ignore_errors=True)
             return {
                 'status': True,
                 'message': 'Download success',
-                'path': os.getcwd() + '/downloads/' + self.video_name + '.mp4'
+                'path': os.path.join(download_dir, mp4_file_name)
             }
         except Exception as error_download_m3u8:
             return {
@@ -282,28 +385,43 @@ class IdlixHelper:
             regex_subtitle = re.search(r"var playerjsSubtitle = \"(.*)\";", request.text)
             
             if regex_subtitle:
+                subtitle_value = regex_subtitle.group(1)
+
+                # the old code did split("https://")[1] twice, which raised
+                # IndexError whenever the captured value held no https:// in it
+                if "https://" in subtitle_value:
+                    subtitle_url = "https://" + subtitle_value.split("https://", 1)[1]
+                elif subtitle_value.startswith("http://"):
+                    subtitle_url = subtitle_value
+                else:
+                    self.is_subtitle = False
+                    return {
+                        'status': False,
+                        'message': 'Unparsable subtitle URL: ' + subtitle_value[:80]
+                    }
 
                 if download:
-
                     subtitle_request = requests.get(
-                        url="https://" + regex_subtitle.group(1).split("https://")[1],
+                        url=subtitle_url,
                     )
-                    with open(self.video_name.replace(" ", "_") + '.vtt', 'wb') as subtitle_file:
+                    subtitle_stem = self.safe_file_stem(self.video_name).replace(" ", "_")
+                    vtt_path = subtitle_stem + '.vtt'
+                    with open(vtt_path, 'wb') as subtitle_file:
                         subtitle_file.write(subtitle_request.content)
-                    self.convert_vtt_to_srt(self.video_name.replace(" ", "_") + '.vtt')
-                    
-                    os.rename(self.video_name.replace(" ", "_") + '.srt', self.video_name.replace(" ", "_") + '.srt')
+                    self.convert_vtt_to_srt(vtt_path)
+
+                    # the os.rename(srt, srt) that used to follow was a no-op
                     self.is_subtitle = True
-                    logger.success('[SUCCESS] Subtitle \''+ self.video_name.replace(" ", "_") + '\' downloaded.')
+                    logger.success('[SUCCESS] Subtitle \'' + subtitle_stem + '\' downloaded.')
                     return {
                         'status': True,
-                        'subtitle': self.video_name.replace(" ", "_") + '.srt',
+                        'subtitle': subtitle_stem + '.srt',
                     }
 
                 self.is_subtitle = True
                 return {
                     'status': True,
-                    'subtitle': "https://" + regex_subtitle.group(1).split("https://")[1]
+                    'subtitle': subtitle_url
                 }
             else:
                 self.is_subtitle = False

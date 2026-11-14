@@ -8,6 +8,29 @@ And this remove some package and process installation.
 
 ![Screenshot 2025-01-07 at 13 53 38](https://github.com/user-attachments/assets/fadd457a-cd9b-4870-8f55-f813af5ee717)
 
+## Security & dependencies
+
+`requirements.txt` was audited and rewritten: the original pinned **53**
+packages, but only **9** are actually imported by the source. The other 44 were
+leftovers from the upstream fork and carried roughly **70 CVEs across 12
+packages** (Flask, Werkzeug, Jinja2, cryptography, py7zr, Brotli, urllib3,
+soupsieve, certifi, idna, requests, curl_cffi) — including an SSRF in
+`curl_cffi` and a credential leak in `requests`.
+
+The file now pins only the 9 direct dependencies, each bumped to a release
+verified clean against the [OSV.dev](https://osv.dev) PyPI database. Transitive
+dependencies are resolved by `pip` at install time rather than hand-pinned, so
+they are never left frozen on a vulnerable version.
+
+Install into a virtualenv so those resolved versions stay isolated from your
+system Python:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
 ## Features
 
 | Name   | Status | Note   |
@@ -22,15 +45,18 @@ And this remove some package and process installation.
 
 Before do **iDLix** installation, you need to install these first.
 
-- [Python](https://www.python.org/downloads/) (version: >3.12.1)
+- [Python](https://www.python.org/downloads/) (version: >3.12.1 — tested on 3.13.5 and 3.14.9)
 - [pip](https://pypi.org/project/pip/) (version: >24.3.1)
+- [ffmpeg](https://ffmpeg.org/download.html) — used by `m3u8-To-MP4` to merge the
+  downloaded segments. Without it the program still starts, but downloads cannot
+  be assembled.
 
 ## Installation
 
 ##### 1. Clone this main branch repository
 
 ```bash
-  git clone https://github.com/gopelkujo/iDLix.git
+  git clone https://github.com/inem26726/iDLix.git
 ```
 
 ##### 2. Install the requirements
