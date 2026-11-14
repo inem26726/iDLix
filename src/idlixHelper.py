@@ -23,9 +23,14 @@ from src.CryptoJsAesHelper import CryptoJsAes, dec
 
 
 class IdlixHelper:
-    BASE_WEB_URL = "https://tv7.idlix.asia/"
+    # Mirrors rotate constantly (the hardcoded tv7.idlix.asia no longer even
+    # resolves). Point the tool at a mirror with IDLIX_BASE_URL instead of
+    # editing source, and derive Host/Referer from it so the two cannot drift.
+    BASE_WEB_URL = os.getenv("IDLIX_BASE_URL", "https://z2.idlixku.com/")
+    if not BASE_WEB_URL.endswith("/"):
+        BASE_WEB_URL += "/"
     BASE_STATIC_HEADERS = {
-        "Host": "tv7.idlix.asia",
+        "Host": urlparse(BASE_WEB_URL).netloc,
         "Connection": "keep-alive",
         "sec-ch-ua": "Not)A;Brand;v=99, Google Chrome;v=127, Chromium;v=127",
         "sec-ch-ua-mobile": "?0",
